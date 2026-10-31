@@ -68,86 +68,124 @@ class embedText :
                 asin_group.create_dataset(f"mat_{mat_idx}", data=mat, compression="gzip")
 
 class extractData:
-    def extractItems():
-        asin_to_item = {}
+    def findValidItems(category):
+        target_items = CATEGORIES[category]["target_items"]
+        url = f"https://huggingface.co/datasets/McAuley-Lab/Amazon-Reviews-2023/resolve/main/raw/review_categories/{category}.jsonl"
 
-        for category, config in CATEGORIES.items():
-            target_items = config["target_items"]
-            url = f"https://huggingface.co/datasets/McAuley-Lab/Amazon-Reviews-2023/resolve/main/raw/meta_categories/meta_{category}.jsonl"
+        response = requests.get(url, stream=True)
+        response.raise_for_status()
 
-            print(f"Fetching {target_items:,} items for {category}...")
-            response = requests.get(url, stream=True)
-            response.raise_for_status()
+        reviewCountLookup = defaultdict(int)
+        itemCount = 0
+        pbar = tqdm(total=target_items, unit="reviews")
+        for line in response.iter_lines():
+            if not line: continue
+            review = json.loads(line.decode("utf-8"))
+            asin = review.get("parent_asin")
+            reviewCountLookup[asin] += 1
+            if reviewCountLookup[asin] == 10:
+                itemCount += 1
+                pbar.update(1)
+            if itemCount >= CATEGORIES[category]["target_items"]:
+                break
+        pbar.close()
+        return reviewCountLookup
 
-            count = 0
+    def extractValidItems(validItems, category):
+        target_items = CATEGORIES[category]["target_items"]
+        url = f"https://huggingface.co/datasets/McAuley-Lab/Amazon-Reviews-2023/resolve/main/raw/meta_categories/meta_{category}.jsonl"
+
+        response = requests.get(url, stream=True)
+        response.raise_for_status()
+
+        saved_items = 0
+        pbar = tqdm(total=target_items, unit="items")
+
+        with open(ITEMS_OUTPUT, "a", encoding="utf-8") as out_f:
             for line in response.iter_lines(chunk_size=1024 * 1024):
-                if line:
-                    item = json.loads(line.decode("utf-8"))
-                    asin = item.get("parent_asin")
+                if not line: continue
 
-                    if asin and asin not in asin_to_item:
-                        if (item.get("rating_number") or 0) < 10: continue
-                        asin_to_item[asin] = {"title": item.get("title"), "price": item.get("price"), "category": category, "features": item.get("features", []), "average_rating": item.get("average_rating"),}
-                        count += 1
+                item = json.loads(line.decode("utf-8"))
+                asin = item.get("parent_asin")
 
-                    if count >= target_items:
-                        break  
+                if asin in validItems and validItems[asin] >= 10:
+                    item_to_save = {
+                        "title": item.get("title"),
+                        "price": item.get("price"),
+                        "category": category,
+                        "average_rating": item.get("average_rating"),
+                        "parent_asin": asin,
+                    }
+                    out_f.write(json.dumps(item_to_save) + "\n")
+                    saved_items += 1
+                    pbar.update(1)
 
-            print(f"Captured {count:,} items from {category} in seconds.")
+                    if saved_items > CATEGORIES[category]["target_items"]:
+                        break
+        pbar.close()
 
-        with open(ITEMS_OUTPUT, "w", encoding="utf-8") as f:
-            json.dump(asin_to_item, f, indent=2)
-        print(f"\nSaved {len(asin_to_item):,} total items to '{ITEMS_OUTPUT}'.\n")
-        return asin_to_item
+    def gatherReviews(validItems, category):
+        target_reviews = CATEGORIES[category]["target_reviews"]
+        url = f"https://huggingface.co/datasets/McAuley-Lab/Amazon-Reviews-2023/resolve/main/raw/review_categories/{category}.jsonl"
 
+        response = requests.get(url, stream=True)
+        response.raise_for_status()
 
-    def extractReviews(categories, asin_to_item):
-        with open(REVIEWS_OUTPUT, "w", encoding="utf-8") as out_f:
-            pass  
+        saved_reviews = 0
+        pbar = tqdm(total=target_reviews, unit="reviews")
 
-        for category, config in CATEGORIES.items():
-            target_reviews = config["target_reviews"]
-            url = f"https://huggingface.co/datasets/McAuley-Lab/Amazon-Reviews-2023/resolve/main/raw/review_categories/{category}.jsonl"
+        with open(REVIEWS_OUTPUT, "a", encoding="utf-8") as out_f:
+            for line in response.iter_lines():
+                if not line: continue
 
-            print(f"Streaming {target_reviews:,} reviews for {category}...")
-            response = requests.get(url, stream=True)
-            response.raise_for_status()
+                review = json.loads(line.decode("utf-8"))
+                asin = review.get("parent_asin")
 
-            saved_reviews = 0
-            pbar = tqdm(total=target_reviews, unit="reviews")
+                if asin in validItems and validItems[asin] >= 10:
+                    review["category"] = category
+                    out_f.write(json.dumps(review) + "\n")
+                    saved_reviews += 1
+                    pbar.update(1)
 
-            with open(REVIEWS_OUTPUT, "a", encoding="utf-8") as out_f:
-                for line in response.iter_lines():
-                    if not line: continue
-
-                    review = json.loads(line.decode("utf-8"))
-                    asin = review.get("parent_asin")
-
-                    if asin in asin_to_item:
-                        review["category"] = category
-                        out_f.write(json.dumps(review) + "\n")
-                        saved_reviews += 1
-                        pbar.update(1)
-
-                        if saved_reviews >= target_reviews:
-                            break
-
-            pbar.close()
+                    if saved_reviews >= target_reviews:
+                        break
+        pbar.close()
 
 def main():
-    print("Extracting Items")
-    itemsTaken = extractData.extractItems()
-    print("Item Data Downloaded")
+    oldTest = False
+    if oldTest:
+        print("Extracting Items")
+        itemsTaken = extractData.extractItems()
+        print("Item Data Downloaded")
 
-    print()
-    print("Extracting reviews relative to found Items")
-    extractData.extractReviews(CATEGORIES, itemsTaken)
-    print("Reviews extracted")
-    print()
+        print()
+        print("Extracting reviews relative to found Items")
+        extractData.extractReviews(CATEGORIES, itemsTaken)
+        print("Reviews extracted")
+        print()
 
-    print("Starting review embed")
-    embedText.embed_reviews()
-    print("Finished")
+        print("Starting review embed")
+        embedText.embed_reviews()
+        print("Finished")
+    else:
+        with open(REVIEWS_OUTPUT, "w", encoding="utf-8") as out_f:
+            pass  
+        with open(ITEMS_OUTPUT, "w", encoding="utf-8") as out_f:
+            pass
+        for category, config in CATEGORIES.items():    
+            print(f"Starting pipeline for {category}")
+            print("Searching for valid items")
+            validItems = extractData.findValidItems(category)
+            print("Extracting valid items")
+            extractData.extractValidItems(validItems, category)
+            print("Extracting reviews relative to valid items")
+            extractData.gatherReviews(validItems, category)
+            print()
+            print()
+        print("Extracting Finished")
+        print("Starting embedding")
+        embedText.embed_reviews()
+        print("All finished")
 
 if __name__ == "__main__":
     main()
