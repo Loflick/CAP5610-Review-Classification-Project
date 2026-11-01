@@ -16,10 +16,14 @@ After that's finished running, in whatever file you want to use the embedding in
 
 then you can do
 'from preprocessing.readGloveTest import loadData'
+
 'from preprocessing.gloveEmbedTest import CATEGORIES'
+
 'from preprocessing.gloveEmbedTest import ITEMS_OUTPUT'
 
 Example usage
 for category, config in CATEGORIES.items():
+
   for asin, matrices in loadData.stream_category("arrays.h5", category):
+  
     do stuff with data
