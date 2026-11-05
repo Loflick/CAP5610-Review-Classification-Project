@@ -12,6 +12,7 @@ import requests
 import hashlib
 from sklearn.model_selection import train_test_split
 import gc
+from pathlib import Path
 
 CATEGORIES = {
     "Electronics": {"target_reviews": 200_000, "target_items": 25_000},
@@ -64,7 +65,8 @@ class embedText :
     def embed_reviews(filePath, savePath):
         df_reviews = pd.read_json(filePath, lines=True)
 
-        glove_path = './preprocessing/glove.840B.300d.txt'
+        script_dir = Path(__file__).resolve().parent
+        glove_path = script_dir / "glove.840B.300d.txt"
         glove = embedText.load_glove_dict(glove_path, embedding_dim=300)
 
         test_review = None
@@ -183,37 +185,40 @@ def main():
     with open(TEST_REVIEW_OUTPUT, "w", encoding="utf-8") as out_f:
         pass
 
-    for category, config in CATEGORIES.items():    
-        print(f"Starting pipeline for {category}")
-        extractData.extractValidItemsForCategory(category)
+    downloadNewFiles = True
 
-    with open(ITEMS_OUTPUT, "r") as out_f:
-        items = [json.loads(line) for line in out_f if line.strip()]
+    if downloadNewFiles:
+        for category, config in CATEGORIES.items():    
+            print(f"Starting pipeline for {category}")
+            extractData.extractValidItemsForCategory(category)
 
-    df = pd.DataFrame(items)
+        with open(ITEMS_OUTPUT, "r") as out_f:
+            items = [json.loads(line) for line in out_f if line.strip()]
 
-    train_df, temp_df = train_test_split(df, test_size = 0.20, stratify=df["rating"], random_state=25269876)
+        df = pd.DataFrame(items)
 
-    val_df, test_df = train_test_split(temp_df, test_size = 0.50, stratify=temp_df["rating"], random_state=25269876)
+        train_df, temp_df = train_test_split(df, test_size = 0.20, stratify=df["rating"], random_state=25269876)
 
-    train_df.to_json(TRAIN_ITEMS_OUTPUT, orient="records", indent=2, lines=True)
-    val_df.to_json(VALIDATION_ITEMS_OUTPUT, orient="records", indent=2, lines=True)
-    test_df.to_json(TEST_ITEMS_OUTPUT, orient="records", indent=2, lines=True)
+        val_df, test_df = train_test_split(temp_df, test_size = 0.50, stratify=temp_df["rating"], random_state=25269876)
 
-    lookup = defaultdict(str)
-    lookup = {asin: "train" for asin in train_df["parent_asin"]}
-    lookup.update({asin: "val" for asin in val_df["parent_asin"]})
-    lookup.update({asin: "test" for asin in test_df["parent_asin"]})
+        train_df.to_json(TRAIN_ITEMS_OUTPUT, orient="records", indent=2, lines=True)
+        val_df.to_json(VALIDATION_ITEMS_OUTPUT, orient="records", indent=2, lines=True)
+        test_df.to_json(TEST_ITEMS_OUTPUT, orient="records", indent=2, lines=True)
 
-    del train_df
-    del val_df
-    del test_df
+        lookup = defaultdict(str)
+        lookup = {asin: "train" for asin in train_df["parent_asin"]}
+        lookup.update({asin: "val" for asin in val_df["parent_asin"]})
+        lookup.update({asin: "test" for asin in test_df["parent_asin"]})
 
-    gc.collect()
+        del train_df
+        del val_df
+        del test_df
 
-    for category, config in CATEGORIES.items():
-        print("Downloading Reviews")
-        extractData.extractReviewsFromValidItems(lookup, category)
+        gc.collect()
+
+        for category, config in CATEGORIES.items():
+            print("Downloading Reviews")
+            extractData.extractReviewsFromValidItems(lookup, category)
 
     print("Extracting Finished")
     print("Starting embedding")
