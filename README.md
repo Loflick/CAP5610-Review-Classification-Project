@@ -1,4 +1,4 @@
-# CAP5610-Review-Classification-Project
+# Deep Learning & Product Review Classifcation
 Deep Learning Approaches to Product Review Classification using MLP, CNN, LSTM, Transformers
 
 Each model reads Amazon product reviews, embedded with GloVe, and predicts the item's rating class (0-4, meaning 1-5 stars).
