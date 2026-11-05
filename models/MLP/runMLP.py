@@ -1,4 +1,4 @@
-"""Runs the MLP pipeline: loads the pre-split data, trains, validate, tests."""
+"""Runs the MLP pipeline: loads the pre-split data, trains, validates, tests."""
 
 import json
 import sys
@@ -26,7 +26,7 @@ from preprocessing.gloveEmbedTest import (
 SEED = 42
 CLASSES = list(range(NUM_CLASSES))
 
-# Data splits: (items.json, embeddings.npz)
+# Data splits: (items file, embeddings)
 SPLITS = {
     "train": (ROOT / TRAIN_ITEMS_OUTPUT, ROOT / TRAIN_EMBED_OUTPUT),
     "validation": (ROOT / VALIDATION_ITEMS_OUTPUT, ROOT / VALIDATION_EMBED_OUTPUT),
@@ -69,7 +69,6 @@ def load_split(split):
     labels = load_labels(items_file)
     x, y = [], []
 
-    # Pool each items reviews
     for category in CATEGORIES:
         items = loadData.stream_category(embed_file, category)
 
@@ -86,11 +85,11 @@ def load_split(split):
                 total += review.sum(axis=0)
                 words += len(review)
 
-            # x = (1 / N) * sum(e_i), e_i 
+            # x = (1 / W) * sum(e_j), e_j = word embedding, W = words
             x.append(total / words)
             y.append(labels[asin])
 
-    # Convert to numpy arrs
+    # Convert to numpy arrays
     x = np.asarray(x, dtype=np.float32)
     y = np.asarray(y, dtype=np.int64)
 

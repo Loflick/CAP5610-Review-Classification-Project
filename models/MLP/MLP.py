@@ -18,11 +18,11 @@ DEFAULT_CONFIG = {
     "weight_power": 0.5,
 }
 
+
 class MLP:
     """MLP: input, hidden layers, output."""
 
     def __init__(
-        # Init model hyper parameters
         self,
         hidden_sizes=(256, 128),
         activation="relu",
@@ -30,6 +30,7 @@ class MLP:
         embed_dim=EMBED_DIM,
         num_classes=NUM_CLASSES,
     ):
+        # Init model hyperparameters
         self.hidden_sizes = hidden_sizes
         self.activation = activation
         self.learning_rate = learning_rate
@@ -67,7 +68,7 @@ class MLP:
         return model
 
     def fit(self, x_train, y_train, x_val, y_val, batch_size=256, epochs=10, class_weight=None):
-        """Train, validates after each epoch."""
+        """Train, validating after each epoch."""
         history = self.model.fit(
             x_train, y_train,
             validation_data=(x_val, y_val),
