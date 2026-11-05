@@ -26,43 +26,35 @@ from preprocessing.gloveEmbedTest import ITEMS_OUTPUT
 class MultiHeadAttention(nn.Module):
     def __init__(self, d_model, num_heads):
         super(MultiHeadAttention, self).__init__()
-        # Ensure that the model dimension (d_model) is divisible by the number of heads
         assert d_model % num_heads == 0, "d_model must be divisible by num_heads"
         
-        # Initialize dimensions
-        self.d_model = d_model # Model's dimension
-        self.num_heads = num_heads # Number of attention heads
-        self.d_k = d_model // num_heads # Dimension of each head's key, query, and value
+        self.d_model = d_model 
+        self.num_heads = num_heads 
+        self.d_k = d_model // num_heads 
         
-        # Linear layers for transforming inputs
-        self.W_q = nn.Linear(d_model, d_model) # Query transformation
-        self.W_k = nn.Linear(d_model, d_model) # Key transformation
-        self.W_v = nn.Linear(d_model, d_model) # Value transformation
-        self.W_o = nn.Linear(d_model, d_model) # Output transformation
+        self.W_q = nn.Linear(d_model, d_model) 
+        self.W_k = nn.Linear(d_model, d_model) 
+        self.W_v = nn.Linear(d_model, d_model) 
+        self.W_o = nn.Linear(d_model, d_model) 
         
     def scaled_dot_product_attention(self, Q, K, V, mask=None):
         return F.scaled_dot_product_attention(Q, K, V, attn_mask=mask)
         
     def split_heads(self, x):
-        # Reshape the input to have num_heads for multi-head attention
         batch_size, seq_length, d_model = x.size()
         return x.view(batch_size, seq_length, self.num_heads, self.d_k).transpose(1, 2)
         
     def combine_heads(self, x):
-        # Combine the multiple heads back to original shape
         batch_size, _, seq_length, d_k = x.size()
         return x.transpose(1, 2).contiguous().view(batch_size, seq_length, self.d_model)
         
     def forward(self, Q, K, V, mask=None):
-        # Apply linear transformations and split heads
         Q = self.split_heads(self.W_q(Q))
         K = self.split_heads(self.W_k(K))
         V = self.split_heads(self.W_v(V))
         
-        # Perform scaled dot-product attention
         attn_output = self.scaled_dot_product_attention(Q, K, V, mask)
         
-        # Combine heads and apply output transformation
         output = self.W_o(self.combine_heads(attn_output))
         return output
 
@@ -148,12 +140,9 @@ class ReviewAttentionPooling(nn.Module):
         )
 
     def forward(self, review_vectors, review_mask=None):
-        # review_vectors: [B, K, d_model]
-        # review_mask: [B, K] (True for real reviews, False for empty padding reviews)
         scores = self.scorer(review_vectors)  # [B, K, 1]
         
         if review_mask is not None:
-            # Mask out dummy reviews so they don't get attention
             scores = scores.masked_fill(~review_mask.unsqueeze(-1), -1e9)
             
         weights = torch.softmax(scores, dim=1) # [B, K, 1]
@@ -172,39 +161,29 @@ class HierarchicalProductClassifier(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, batch_reviews):
-        # batch_reviews: [B, K, max_len, d_model]
         B, K, max_len, d_model = batch_reviews.shape
 
-        # 1. Identify which of the K reviews are real vs empty padding
-        # Shape: [B, K]
         real_review_mask = (batch_reviews.abs().sum(dim=(-1, -2)) != 0)
-        # Fallback if an item has 0 reviews: ensure at least review 0 is active
         real_review_mask[:, 0] = True 
 
-        # 2. Flatten for Word-Level Encoder
         flat_reviews = batch_reviews.view(B * K, max_len, d_model)
-        word_mask = (flat_reviews.abs().sum(dim=-1) != 0) # [B * K, max_len]
+        word_mask = (flat_reviews.abs().sum(dim=-1) != 0) 
 
-        # CRITICAL FIX FOR NaN:
-        # If an entire review is padding, unmask the first token so softmax doesn't divide 0/0
-        empty_reviews = ~word_mask.any(dim=-1, keepdim=True) # [B * K, 1]
-        safe_mask = word_mask | empty_reviews                # [B * K, max_len]
-        attn_mask = safe_mask.unsqueeze(1).unsqueeze(2)      # [B * K, 1, 1, max_len]
+        empty_reviews = ~word_mask.any(dim=-1, keepdim=True) 
+        safe_mask = word_mask | empty_reviews                
+        attn_mask = safe_mask.unsqueeze(1).unsqueeze(2)      
 
         x = self.dropout(self.pos_encoder(flat_reviews))
         for layer in self.encoder_layers:
             x = layer(x, attn_mask)
 
-        # 3. Word Pooling
         mask_exp = safe_mask.unsqueeze(-1).float()
         token_counts = mask_exp.sum(dim=1).clamp(min=1.0)
         review_vectors = (x * mask_exp).sum(dim=1) / token_counts
         review_vectors = review_vectors.view(B, K, d_model)
 
-        # 4. Review Pooling (Pass real_review_mask so dummy reviews receive 0 weight)
         item_vectors, weights = self.review_attention(review_vectors, review_mask=real_review_mask)
 
-        # 5. Output Logits
         logits = self.fc(item_vectors)
         return logits, weights
 

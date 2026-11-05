@@ -9,6 +9,9 @@ from collections import defaultdict
 from tqdm import tqdm
 import re
 import requests
+import hashlib
+from sklearn.model_selection import train_test_split
+import gc
 
 CATEGORIES = {
     "Electronics": {"target_reviews": 200_000, "target_items": 25_000},
@@ -21,6 +24,18 @@ CATEGORIES = {
 ITEMS_OUTPUT = "asin_to_item.json"
 REVIEWS_OUTPUT = "amazon_reviews_1M_sample.jsonl"
 MAX_REVIEWS_PER_ITEM = 30
+
+TRAIN_ITEMS_OUTPUT = "trainItems.json"
+VALIDATION_ITEMS_OUTPUT = "validationItems.json"
+TEST_ITEMS_OUTPUT = "testItems.json"
+
+TRAIN_REVIEW_OUTPUT = "trainReviews.json"
+VALIDATION_REVIEW_OUTPUT = "validationReviews.json"
+TEST_REVIEW_OUTPUT = "testReviews.json"
+
+TRAIN_EMBED_OUTPUT = "trainEmbed.json"
+VALIDATION_EMBED_OUTPUT = "validationEmbed.json"
+TEST_EMBED_OUTPUT = "testEmbed.json"
 
 class embedText :
     def load_glove_dict(glove_path, embedding_dim=300):
@@ -46,15 +61,15 @@ class embedText :
 
         return matrix
 
-    def embed_reviews():
-        df_reviews = pd.read_json("amazon_reviews_1M_sample.jsonl", lines=True)
+    def embed_reviews(filePath, savePath):
+        df_reviews = pd.read_json(filePath, lines=True)
 
-        glove_path = './Pre-Processing Stuff\glove.840B.300d.txt'
+        glove_path = './preprocessing/glove.840B.300d.txt'
         glove = embedText.load_glove_dict(glove_path, embedding_dim=300)
 
         test_review = None
 
-        with h5py.File("arrays.h5", "w") as f:
+        with h5py.File(savePath, "w") as f:
             for row in tqdm(df_reviews.itertuples(), total=len(df_reviews), desc="Processing"):
                 category = str(row.category)
                 asin = str(row.parent_asin)
@@ -69,95 +84,144 @@ class embedText :
                 asin_group.create_dataset(f"mat_{mat_idx}", data=mat, compression="gzip")
 
 class extractData:
-    def extractReviewsForValidItems(category):
-        target_items = CATEGORIES[category]["target_items"]
-        url = f"https://huggingface.co/datasets/McAuley-Lab/Amazon-Reviews-2023/resolve/main/raw/review_categories/{category}.jsonl"
-
-        response = requests.get(url, stream=True)
-        response.raise_for_status()
-
-        reviewCountLookup = defaultdict(list)
-        validItems = defaultdict(int)
-        itemCount = 0
-
-        pbar = tqdm(total=target_items, unit="reviews")
-
-        with open(REVIEWS_OUTPUT, "a", encoding="utf-8") as out_r:
-            for line in response.iter_lines(chunk_size=1024 * 1024):
-                if not line: continue
-                review = json.loads(line.decode("utf-8"))
-                asin = review.get("parent_asin")
-
-                if asin in validItems:
-                    if validItems[asin] > MAX_REVIEWS_PER_ITEM:
-                        continue
-                    review["category"] = category
-                    out_r.write(json.dumps(review) + "\n")
-                    validItems[asin] += 1
-                elif len(reviewCountLookup[asin]) >= 10:
-                    pbar.update(1)
-                    reviewCountLookup[asin].append(review)
-                    for item in reviewCountLookup[asin]:
-                        out_r.write(json.dumps(item) + "\n")
-                    reviewCountLookup[asin].clear()
-                    validItems[asin] = 10
-                    itemCount += 1
-                else:
-                    reviewCountLookup[asin].append(review)
-                if itemCount > CATEGORIES[category]["target_items"]:
-                    break
-        pbar.close()
-        return validItems
-
-    def extractValidItems(validItems, category):
+    def extractValidItemsForCategory(category):
         target_items = CATEGORIES[category]["target_items"]
         url = f"https://huggingface.co/datasets/McAuley-Lab/Amazon-Reviews-2023/resolve/main/raw/meta_categories/meta_{category}.jsonl"
 
         response = requests.get(url, stream=True)
         response.raise_for_status()
 
-        saved_items = 0
-        pbar = tqdm(total=target_items, unit="items")
+        reviewCountLookup = defaultdict(int)
+        itemCount = 0
 
-        with open(ITEMS_OUTPUT, "a", encoding="utf-8") as out_f:
+        pbar = tqdm(total=target_items, unit="reviews")
+
+        with open(ITEMS_OUTPUT, "a", encoding="utf-8") as out_r:
             for line in response.iter_lines(chunk_size=1024 * 1024):
                 if not line: continue
-
                 item = json.loads(line.decode("utf-8"))
                 asin = item.get("parent_asin")
 
-                if asin in validItems and validItems[asin] >= 10:
-                    item_to_save = {
-                        "title": item.get("title"),
-                        "price": item.get("price"),
-                        "category": category,
-                        "average_rating": item.get("average_rating"),
-                        "parent_asin": asin,
-                    }
-                    out_f.write(json.dumps(item_to_save) + "\n")
-                    saved_items += 1
-                    pbar.update(1)
+                pbar.update(1)
 
-                    if saved_items > CATEGORIES[category]["target_items"]:
+                avg_rating = item.get("average_rating")
+                if avg_rating is None:
+                    continue
+                rating = max(0, min(4, round(float(avg_rating)) - 1))
+
+                item_to_save = {
+                    "title": item.get("title"),
+                    "category": category,
+                    "rating": rating,
+                    "parent_asin": asin,
+                }
+                out_r.write(json.dumps(item_to_save) + "\n")
+                itemCount += 1
+
+
+                if itemCount > CATEGORIES[category]["target_items"]:
+                    break
+        pbar.close()
+
+    def extractReviewsFromValidItems(asinLookup, category):
+        target_reviews = CATEGORIES[category]["target_reviews"]
+        url = f"https://huggingface.co/datasets/McAuley-Lab/Amazon-Reviews-2023/resolve/main/raw/review_categories/{category}.jsonl"
+
+        response = requests.get(url, stream=True)
+        response.raise_for_status()
+
+        pbar = tqdm(total=target_reviews, unit="reviews")
+
+        count = 0
+
+        with open(TRAIN_REVIEW_OUTPUT, "a", encoding="utf-8") as out_T, \
+             open(VALIDATION_REVIEW_OUTPUT, "a", encoding="utf-8") as out_V, \
+             open(TEST_REVIEW_OUTPUT, "a", encoding="utf-8") as out_Te:
+                writers = {
+                    "train": out_T,
+                    "val": out_V,
+                    "test": out_Te
+                }
+                for line in response.iter_lines(chunk_size=1024 * 1024):
+                    if not line: continue
+
+                    review = json.loads(line.decode("utf-8"))
+                    asin = review.get("parent_asin")
+
+                    split = asinLookup.get(asin)
+                    target = writers.get(split)
+
+                    if target:
+                        review_to_save = {
+                            "title": review.get("title"),
+                            "text": review.get("text"),
+                            "category": category,
+                            "parent_asin": asin,
+                        }
+                        target.write(json.dumps(review_to_save) + "\n")
+                        pbar.update(1)
+                        count += 1
+
+                    if count > target_reviews:
                         break
+
         pbar.close()
 
 def main():
-    with open(REVIEWS_OUTPUT, "w", encoding="utf-8") as out_f:
-        pass  
     with open(ITEMS_OUTPUT, "w", encoding="utf-8") as out_f:
         pass
+    with open(TRAIN_ITEMS_OUTPUT, "w", encoding="utf-8") as out_f:
+        pass
+    with open(VALIDATION_ITEMS_OUTPUT, "w", encoding="utf-8") as out_f:
+        pass
+    with open(TEST_ITEMS_OUTPUT, "w", encoding="utf-8") as out_f:
+        pass
+    with open(TRAIN_REVIEW_OUTPUT, "w", encoding="utf-8") as out_f:
+        pass
+    with open(VALIDATION_REVIEW_OUTPUT, "w", encoding="utf-8") as out_f:
+        pass
+    with open(TEST_REVIEW_OUTPUT, "w", encoding="utf-8") as out_f:
+        pass
+
     for category, config in CATEGORIES.items():    
         print(f"Starting pipeline for {category}")
-        print("Searching for valid items and storing corresponding reviews")
-        validItems = extractData.extractReviewsForValidItems(category)
-        print("Extracting valid items")
-        extractData.extractValidItems(validItems, category)
-        print()
-        print()
+        extractData.extractValidItemsForCategory(category)
+
+    with open(ITEMS_OUTPUT, "r") as out_f:
+        items = [json.loads(line) for line in out_f if line.strip()]
+
+    df = pd.DataFrame(items)
+
+    train_df, temp_df = train_test_split(df, test_size = 0.20, stratify=df["rating"], random_state=25269876)
+
+    val_df, test_df = train_test_split(temp_df, test_size = 0.50, stratify=temp_df["rating"], random_state=25269876)
+
+    train_df.to_json(TRAIN_ITEMS_OUTPUT, orient="records", indent=2, lines=True)
+    val_df.to_json(VALIDATION_ITEMS_OUTPUT, orient="records", indent=2, lines=True)
+    test_df.to_json(TEST_ITEMS_OUTPUT, orient="records", indent=2, lines=True)
+
+    lookup = defaultdict(str)
+    lookup = {asin: "train" for asin in train_df["parent_asin"]}
+    lookup.update({asin: "val" for asin in val_df["parent_asin"]})
+    lookup.update({asin: "test" for asin in test_df["parent_asin"]})
+
+    del train_df
+    del val_df
+    del test_df
+
+    gc.collect()
+
+    for category, config in CATEGORIES.items():
+        print("Downloading Reviews")
+        extractData.extractReviewsFromValidItems(lookup, category)
+
     print("Extracting Finished")
     print("Starting embedding")
-    embedText.embed_reviews()
+    embedText.embed_reviews(TRAIN_REVIEW_OUTPUT, TRAIN_EMBED_OUTPUT)
+    embedText.embed_reviews(VALIDATION_REVIEW_OUTPUT, VALIDATION_EMBED_OUTPUT)
+    embedText.embed_reviews(TEST_REVIEW_OUTPUT, TEST_EMBED_OUTPUT)
+
+
     print("All finished")
 
 if __name__ == "__main__":
